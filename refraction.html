@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ray Tracing Demo with Refraction</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #3f3f3f;
+            font-family: Arial, sans-serif;
+            margin: 0;
+        }
+        canvas {
+            border: 2px solid #444;
+            background-color: rgb(255, 255, 255);
+        }
+      
+    </style>
+</head>
+<body>
+    <canvas id="canvas" width="800" height="800"></canvas>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/2.8.1/gl-matrix-min.js"></script>
+
+    <script>
+        const config = {
+            backgroundColor: [0.1, 0.1, 0.1],
+            camera: {
+                position: [0, 2, -5],
+                lookAt: [0, 0, 0],
+                up: [0, 1, 0],
+                fov: 60,
+                aspectRatio: 1.0
+            },
+            spheres: [
+                {
+                    center: [-1.5, 0.0, 0],
+                    radius: 1,
+                    color: [0.9, 0.2, 0.2],    // Lighter red for transparency
+                    specular: 0.9,
+                    shininess: 300,
+                    transparent: true,          // Enable transparency
+                    refractionIndex: 1.5,       // Glass (approximately)
+                    opacity: 0.3                // 30% opaque, 70% transparent
+                },
+                {
+                    center: [1.5, 0, 0],
+                    radius: 1,
+                    color: [0.2, 0.2, 0.9],    // Lighter blue for transparency
+                    specular: 0.9,
+                    shininess: 300,
+                    transparent: true,          // Enable transparency
+                    refractionIndex: 1.33,      // Water (approximately)
+                    opacity: 0.4                // 40% opaque, 60% transparent
+                }
+            ],
+            planes: [
+                {
+                    normal: [0, 1, 0],
+                    point: [0, -1, 0],
+                    color: [0.7, 0.7, 0.7],
+                    specular: 0.3,
+                    shininess: 10,
+                    checkerPattern: true,
+                    checkerScale: 2,
+                    transparent: false          // Not transparent
+                }
+            ],
+            lights: [
+                {
+                    type: "ambient",
+                    intensity: 0.2
+                },
+                {
+                    type: "point",
+                    intensity: 0.7,             // Increased intensity for better visibility
+                    position: [2, 1, -3]
+                },
+                {
+                    type: "directional",
+                    intensity: 0.3,             // Increased intensity for better visibility
+                    direction: [1, 4, -4]
+                }
+            ],
+            // Shadow configuration
+            shadowBias: 0.001,
+            shadowIntensity: 0.7,
+            // Refraction configuration
+            maxRefractionDepth: 5,
+            refractionBias: 0.001,
+            airRefractionIndex: 1.0            // Refraction index of air
+        };
+
+        function normalize(v) {
+            const len = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            return [v[0] / len, v[1] / len, v[2] / len];
+        }
+
+        function subtract(a, b) {
+            return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        }
+
+        function add(a, b) {
+            return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+        }
+
+        function scale(v, s) {
+            return [v[0] * s, v[1] * s, v[2] * s];
+        }
+
+        function dot(a, b) {
+            return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        }
+
+        function reflect(ray, normal) {
+            const dot2 = 2 * dot(ray, normal);
+            return [
+                ray[0] - normal[0] * dot2,
+                ray[1] - normal[1] * dot2,
+                ray[2] - normal[2] * dot2
+            ];
+        }
+        
+        // Calculate refraction direction using Snell's law
+        function refract(incident, normal, n1, n2) {
+            // Compute ratio of refraction indices
+            const ratio = n1 / n2;
+            
+            // Check if we're entering or exiting the material
+            const cosi = -dot(incident, normal);
+            let actualNormal = normal;
+            let actualRatio = ratio;
+            
+            // If we're exiting the material (from inside to outside)
+            if (cosi < 0) {
+                actualNormal = scale(normal, -1);  // Flip normal
+                actualRatio = 1 / ratio;           // Invert ratio
+            }
+            
+            const cost2 = 1 - actualRatio * actualRatio * (1 - cosi * cosi);
+            
+            // Check for total internal reflection
+            if (cost2 < 0) {
+                // Total internal reflection - reflect instead
+                return reflect(incident, actualNormal);
+            }
+            
+            // Calculate refraction direction
+            const coeff1 = actualRatio;
+            const coeff2 = actualRatio * cosi - Math.sqrt(cost2);
+            
+            return [
+                incident[0] * coeff1 + actualNormal[0] * coeff2,
+                incident[1] * coeff1 + actualNormal[1] * coeff2,
+                incident[2] * coeff1 + actualNormal[2] * coeff2
+            ];
+        }
+
+        function intersectRaySphere(origin, direction, sphere) {
+            const center = sphere.center;
+            const radius = sphere.radius;
+
+            const oc = subtract(origin, center);
+            const a = dot(direction, direction);
+            const b = 2 * dot(oc, direction);
+            const c = dot(oc, oc) - radius * radius;
+            const discriminant = b * b - 4 * a * c;
+
+            if (discriminant < 0) {
+                return Infinity;
+            }
+
+            const t1 = (-b - Math.sqrt(discriminant)) / (2 * a);
+            const t2 = (-b + Math.sqrt(discriminant)) / (2 * a);
+
+            if (t1 > 0.001) {
+                return t1;
+            }
+            if (t2 > 0.001) {
+                return t2;
+            }
+            return Infinity;
+        }
+
+        function intersectRayPlane(origin, direction, plane) {
+            const normal = plane.normal;
+            const point = plane.point;
+
+            const denominator = dot(direction, normal);
+
+            if (Math.abs(denominator) < 0.0001) {
+                return Infinity;
+            }
+
+            const p0l0 = subtract(point, origin);
+            const t = dot(p0l0, normal) / denominator;
+
+            if (t > 0.001) {
+                return t;
+            }
+
+            return Infinity;
+        }
+
+        function findClosestIntersection(origin, direction, minT, maxT) {
+            let closestT = Infinity;
+            let closestObject = null;
+            let objectType = null;
+
+            for (const sphere of config.spheres) {
+                const t = intersectRaySphere(origin, direction, sphere);
+                if (t > minT && t < maxT && t < closestT) {
+                    closestT = t;
+                    closestObject = sphere;
+                    objectType = "sphere";
+                }
+            }
+
+            for (const plane of config.planes) {
+                const t = intersectRayPlane(origin, direction, plane);
+                if (t > minT && t < maxT && t < closestT) {
+                    closestT = t;
+                    closestObject = plane;
+                    objectType = "plane";
+                }
+            }
+
+            return { object: closestObject, type: objectType, distance: closestT };
+        }
+
+        function getCheckerColor(point, plane) {
+            if (!plane.checkerPattern) {
+                return plane.color;
+            }
+
+            const scale = plane.checkerScale || 1;
+            const x = Math.floor(point[0] / scale);
+            const z = Math.floor(point[2] / scale);
+
+            if ((x + z) % 2 === 0) {
+                return plane.color;
+            } else {
+                return [
+                    plane.color[0] * 0.3,
+                    plane.color[1] * 0.3,
+                    plane.color[2] * 0.3
+                ];
+            }
+        }
+
+        // Check if a point is in shadow
+        function isInShadow(point, lightDir, lightDistance) {
+            // Move the point slightly away from the surface to avoid self-intersection
+            const shadowOrigin = add(point, scale(lightDir, config.shadowBias));
+            
+            // Check if there's any object between the point and the light
+            const { distance } = findClosestIntersection(
+                shadowOrigin, 
+                lightDir, 
+                config.shadowBias, 
+                lightDistance === Infinity ? Infinity : lightDistance - config.shadowBias
+            );
+            
+            // If we found an intersection, the point is in shadow
+            return distance < Infinity;
+        }
+
+        function computePhongLighting(point, normal, viewDir, object, objectType) {
+            let result = [0, 0, 0];
+
+            let objectColor;
+            if (objectType === "plane" && object.checkerPattern) {
+                objectColor = getCheckerColor(point, object);
+            } else {
+                objectColor = object.color;
+            }
+
+            for (const light of config.lights) {
+                if (light.type === "ambient") {
+                    result = add(result, scale(objectColor, light.intensity));
+                    continue;
+                }
+
+                let lightDir, lightDistance = Infinity;
+
+                if (light.type === "point") {
+                    lightDir = subtract(light.position, point);
+                    lightDistance = Math.sqrt(dot(lightDir, lightDir));
+                    lightDir = normalize(lightDir);
+                } else if (light.type === "directional") {
+                    lightDir = normalize(scale(light.direction, -1)); // Invert direction for directional lights
+                }
+
+                // Check for shadows
+                const shadowed = isInShadow(point, lightDir, lightDistance);
+                
+                if (!shadowed) {
+                    const nDotL = Math.max(0, dot(normal, lightDir));
+                    if (nDotL > 0) {
+                        const diffuse = scale(objectColor, light.intensity * nDotL);
+                        result = add(result, diffuse);
+                    }
+
+                    if (object.specular > 0) {
+                        const reflectDir = reflect(scale(lightDir, -1), normal);
+                        const rDotV = Math.max(0, dot(reflectDir, viewDir));
+                        if (rDotV > 0) {
+                            const specularIntensity = light.intensity * Math.pow(rDotV, object.shininess) * object.specular;
+                            const specular = [specularIntensity, specularIntensity, specularIntensity];
+                            result = add(result, specular);
+                        }
+                    }
+                } else {
+                    // Apply soft shadow (not completely black)
+                    // We keep the ambient component, but reduce diffuse and specular
+                    const shadowFactor = 1 - config.shadowIntensity;
+                    
+                    // Apply a slight darkening for shadowed areas (more realistic than complete darkness)
+                    const nDotL = Math.max(0, dot(normal, lightDir)) * shadowFactor * 0.2;
+                    if (nDotL > 0) {
+                        const diffuse = scale(objectColor, light.intensity * nDotL);
+                        result = add(result, diffuse);
+                    }
+                }
+            }
+
+            return [
+                Math.min(1, Math.max(0, result[0])),
+                Math.min(1, Math.max(0, result[1])),
+                Math.min(1, Math.max(0, result[2]))
+            ];
+        }
+
+        function traceRay(origin, direction, minT, maxT, depth = 0, currentRefIndex = config.airRefractionIndex) {
+            // Base case for recursion - max depth reached
+            if (depth > config.maxRefractionDepth) {
+                return config.backgroundColor;
+            }
+
+            const { object, type, distance } = findClosestIntersection(origin, direction, minT, maxT);
+
+            if (!object) {
+                return config.backgroundColor;
+            }
+
+            const hitPoint = add(origin, scale(direction, distance));
+
+            let normal;
+            if (type === "sphere") {
+                normal = subtract(hitPoint, object.center);
+                normal = normalize(normal);
+            } else if (type === "plane") {
+                normal = object.normal;
+            }
+
+            const viewDir = scale(direction, -1);
+
+            // Calculate local color using Phong lighting model
+            const localColor = computePhongLighting(hitPoint, normal, viewDir, object, type);
+            
+            // If object is not transparent or we've reached max recursion depth, return local color
+            if (!object.transparent || depth >= config.maxRefractionDepth) {
+                return localColor;
+            }
+            
+            // Get the refraction index of the object or default to air
+            const objectRefIndex = object.refractionIndex || config.airRefractionIndex;
+            
+            // Calculate refraction direction using Snell's law
+            const refractionDir = refract(direction, normal, currentRefIndex, objectRefIndex);
+            
+            // Determine whether we're entering or exiting the object
+            const isEntering = dot(direction, normal) < 0;
+            
+            // Calculate the next refraction index - if entering the object, use object's index, otherwise use air
+            const nextRefIndex = isEntering ? objectRefIndex : config.airRefractionIndex;
+            
+            // Apply a small bias in the direction of refraction to avoid self-intersection
+            const biasedNormal = isEntering ? scale(normal, -config.refractionBias) : scale(normal, config.refractionBias);
+            const refractionOrigin = add(hitPoint, biasedNormal);
+            
+            // Recursively trace refracted ray
+            const refractionColor = traceRay(refractionOrigin, refractionDir, config.refractionBias, Infinity, depth + 1, nextRefIndex);
+            
+            // Apply the opacity to blend between the object's color and the refracted color
+            const opacity = object.opacity !== undefined ? object.opacity : 1.0;
+            
+            return [
+                localColor[0] * opacity + refractionColor[0] * (1 - opacity),
+                localColor[1] * opacity + refractionColor[1] * (1 - opacity),
+                localColor[2] * opacity + refractionColor[2] * (1 - opacity)
+            ];
+        }
+
+        function canvasToViewport(x, y, width, height) {
+            const fovRadians = config.camera.fov * Math.PI / 180;
+            const aspectRatio = config.camera.aspectRatio;
+
+            return [
+                (2 * x / width - 1) * Math.tan(fovRadians / 2) * aspectRatio,
+                (1 - 2 * y / height) * Math.tan(fovRadians / 2),
+                1
+            ];
+        }
+
+        function clamp(value, min, max) {
+            return Math.max(min, Math.min(value, max));
+        }
+
+        function renderScene() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            const width = canvas.width;
+            const height = canvas.height;
+
+            const imageData = ctx.createImageData(width, height);
+            const data = imageData.data;
+
+            const origin = config.camera.position;
+
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const direction = canvasToViewport(x, y, width, height);
+                    const normalizedDir = normalize(direction);
+
+                    // Start tracing with recursion depth 0 and air refraction index
+                    const color = traceRay(origin, normalizedDir, 1, Infinity, 0, config.airRefractionIndex);
+
+                    const index = (y * width + x) * 4;
+                    data[index] = clamp(color[0] * 255, 0, 255);
+                    data[index + 1] = clamp(color[1] * 255, 0, 255);
+                    data[index + 2] = clamp(color[2] * 255, 0, 255);
+                    data[index + 3] = 255;
+                }
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+        }
+
+        window.onload = renderScene;
+    </script>
+</body>
+</html>
