@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ray Tracing Demo with Refraction</title>
+    <title>Ray Tracing Demo with Refraction (No Shadows)</title>
     <style>
         body {
             display: flex;
@@ -86,9 +86,6 @@
                     direction: [1, 4, -4]
                 }
             ],
-            // Shadow configuration
-            shadowBias: 0.001,
-            shadowIntensity: 0.7,
             // Refraction configuration
             maxRefractionDepth: 5,
             refractionBias: 0.001,
@@ -252,23 +249,6 @@
             }
         }
 
-        // Check if a point is in shadow
-        function isInShadow(point, lightDir, lightDistance) {
-            // Move the point slightly away from the surface to avoid self-intersection
-            const shadowOrigin = add(point, scale(lightDir, config.shadowBias));
-            
-            // Check if there's any object between the point and the light
-            const { distance } = findClosestIntersection(
-                shadowOrigin, 
-                lightDir, 
-                config.shadowBias, 
-                lightDistance === Infinity ? Infinity : lightDistance - config.shadowBias
-            );
-            
-            // If we found an intersection, the point is in shadow
-            return distance < Infinity;
-        }
-
         function computePhongLighting(point, normal, viewDir, object, objectType) {
             let result = [0, 0, 0];
 
@@ -285,45 +265,30 @@
                     continue;
                 }
 
-                let lightDir, lightDistance = Infinity;
+                let lightDir;
 
                 if (light.type === "point") {
                     lightDir = subtract(light.position, point);
-                    lightDistance = Math.sqrt(dot(lightDir, lightDir));
                     lightDir = normalize(lightDir);
                 } else if (light.type === "directional") {
                     lightDir = normalize(scale(light.direction, -1)); // Invert direction for directional lights
                 }
 
-                // Check for shadows
-                const shadowed = isInShadow(point, lightDir, lightDistance);
+                // No shadow check here - shadows removed
                 
-                if (!shadowed) {
-                    const nDotL = Math.max(0, dot(normal, lightDir));
-                    if (nDotL > 0) {
-                        const diffuse = scale(objectColor, light.intensity * nDotL);
-                        result = add(result, diffuse);
-                    }
+                const nDotL = Math.max(0, dot(normal, lightDir));
+                if (nDotL > 0) {
+                    const diffuse = scale(objectColor, light.intensity * nDotL);
+                    result = add(result, diffuse);
+                }
 
-                    if (object.specular > 0) {
-                        const reflectDir = reflect(scale(lightDir, -1), normal);
-                        const rDotV = Math.max(0, dot(reflectDir, viewDir));
-                        if (rDotV > 0) {
-                            const specularIntensity = light.intensity * Math.pow(rDotV, object.shininess) * object.specular;
-                            const specular = [specularIntensity, specularIntensity, specularIntensity];
-                            result = add(result, specular);
-                        }
-                    }
-                } else {
-                    // Apply soft shadow (not completely black)
-                    // We keep the ambient component, but reduce diffuse and specular
-                    const shadowFactor = 1 - config.shadowIntensity;
-                    
-                    // Apply a slight darkening for shadowed areas (more realistic than complete darkness)
-                    const nDotL = Math.max(0, dot(normal, lightDir)) * shadowFactor * 0.2;
-                    if (nDotL > 0) {
-                        const diffuse = scale(objectColor, light.intensity * nDotL);
-                        result = add(result, diffuse);
+                if (object.specular > 0) {
+                    const reflectDir = reflect(scale(lightDir, -1), normal);
+                    const rDotV = Math.max(0, dot(reflectDir, viewDir));
+                    if (rDotV > 0) {
+                        const specularIntensity = light.intensity * Math.pow(rDotV, object.shininess) * object.specular;
+                        const specular = [specularIntensity, specularIntensity, specularIntensity];
+                        result = add(result, specular);
                     }
                 }
             }
